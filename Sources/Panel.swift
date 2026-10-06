@@ -15,6 +15,7 @@ final class PanelController {
     private let store: Store
     private let panel: WidgetPanel
     private let hosting: NSHostingView<WidgetView>
+    private let container: CardContainer
     private var cancellable: AnyCancellable?
     private var moveObserver: NSObjectProtocol?
 
@@ -26,10 +27,15 @@ final class PanelController {
     var verifyReport: String {
         let screen = NSScreen.main?.visibleFrame ?? .zero
         let onScreen = PanelController.onScreenWindowCount(for: ProcessInfo.processInfo.processIdentifier)
+        let handles = """
+        left=\(container.leftHandle.frame) right=\(container.rightHandle.frame) bottom=\(container.bottomHandle.frame)
+        """
         return """
         window frame=\(panel.frame)
         window level=\(panel.level.rawValue) visible=\(panel.isVisible) movableByBackground=\(panel.isMovableByWindowBackground)
         content fitting=\(hosting.fittingSize) actual=\(panel.contentView?.frame.size ?? .zero)
+        card width=\(store.cardWidth) list height=\(store.listHeight.map { String(Int($0)) } ?? "auto") measured=\(Int(store.measuredListHeight)) history=\(store.historyOpen)
+        resize handles \(handles)
         this process has \(onScreen) window(s) on screen
         screen visible frame=\(screen)
         """
@@ -47,12 +53,13 @@ final class PanelController {
         self.store = store
         hosting = NSHostingView(rootView: WidgetView(store: store))
         let size = hosting.fittingSize
+        container = CardContainer(hosting: hosting)
         panel = WidgetPanel(contentRect: NSRect(origin: .zero, size: size),
                             styleMask: [.borderless, .nonactivatingPanel],
                             backing: .buffered,
                             defer: false)
 
-        panel.contentView = hosting
+        panel.contentView = container
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = true
@@ -68,6 +75,7 @@ final class PanelController {
 
         // Now that every property is set, the card can be given the real dismiss action.
         hosting.rootView = WidgetView(store: store, onHide: { [weak self] in self?.hide() })
+        wireResizeHandles()
 
         cancellable = store.objectWillChange.sink { [weak self] _ in
             DispatchQueue.main.async { self?.fitHeight() }
@@ -79,6 +87,49 @@ final class PanelController {
                 guard let self, self.panel.isVisible else { return }
                 self.store.rememberFrame(self.panel.frame.origin)
             }
+    }
+
+    // MARK: - Resizing
+
+    private func wireResizeHandles() {
+        // Dragging the left edge keeps the right edge where it is, so the card grows
+        // leftwards; the right edge grows rightwards; the bottom edge changes how tall
+        // the task area is (and the card scrolls once the tasks no longer fit).
+        container.leftHandle.onDrag = { [weak self] delta in
+            self?.growWidth(by: delta, anchoredRight: true)
+        }
+        container.leftHandle.onEnd = { [weak self] in self?.commitResize() }
+        container.rightHandle.onDrag = { [weak self] delta in
+            self?.growWidth(by: delta, anchoredRight: false)
+        }
+        container.rightHandle.onEnd = { [weak self] in self?.commitResize() }
+        container.bottomHandle.onDrag = { [weak self] delta in
+            self?.growListHeight(by: delta)
+        }
+        container.bottomHandle.onEnd = { [weak self] in self?.commitResize() }
+    }
+
+    private func growWidth(by delta: CGFloat, anchoredRight: Bool) {
+        guard delta != 0 else { return }
+        store.setCardWidth(store.cardWidth + Double(delta), persist: false)
+        var frame = panel.frame
+        let top = frame.maxY
+        let right = frame.maxX
+        frame.size.width = CGFloat(store.cardWidth)
+        if anchoredRight { frame.origin.x = right - frame.size.width }
+        frame.origin.y = top - frame.size.height
+        panel.setFrame(frame, display: true)
+    }
+
+    private func growListHeight(by delta: CGFloat) {
+        guard delta != 0 else { return }
+        let base = store.listHeight ?? max(store.measuredListHeight, Store.minListHeight)
+        store.setListHeight(base + Double(delta), persist: false)
+        fitHeight()
+    }
+
+    private func commitResize() {
+        store.save()
     }
 
     deinit {

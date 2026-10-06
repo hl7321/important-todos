@@ -110,6 +110,56 @@ struct TestRunner {
         check("punching the last position finishes the day", reopened.isComplete(Date()))
         check("and the run is today plus yesterday", reopened.streak == 2, "got \(reopened.streak)")
 
+        print("卡片尺寸")
+        reopened.setCardWidth(120)
+        check("宽度有下限", reopened.cardWidth == Store.minWidth, "got \(reopened.cardWidth)")
+        reopened.setCardWidth(2_000)
+        check("宽度有上限", reopened.cardWidth == Store.maxWidth, "got \(reopened.cardWidth)")
+        reopened.setCardWidth(401.4)
+        check("宽度取整到整点", reopened.cardWidth == 401, "got \(reopened.cardWidth)")
+        reopened.setListHeight(10)
+        check("任务区高度有下限", reopened.listHeight == Store.minListHeight,
+              "got \(String(describing: reopened.listHeight))")
+        reopened.setListHeight(20_000)
+        check("任务区高度有上限", reopened.listHeight == Store.maxListHeight)
+        reopened.setListHeight(nil)
+        check("任务区可以回到自动高度", reopened.listHeight == nil)
+        reopened.setCardWidth(Store.defaultWidth)
+        check("宽度能回到默认", reopened.cardWidth == Store.defaultWidth)
+
+        print("历史待办")
+        let threeDaysAgo = Calendar.current.date(byAdding: .day, value: -3, to: Date())!
+        let threeKey = Store.key(for: threeDaysAgo)
+        reopened.needed[threeKey] = reopened.todos.map(\.id)
+        reopened.log[threeKey] = [reopened.todos[0].id]
+        let week = reopened.history(days: 7)
+        check("历史是七天", week.count == 7)
+        check("最新的一天在最上面", week[0].date > week[6].date)
+        check("第一条是今天", Calendar.current.isDateInToday(week[0].date))
+        check("今天有记录", week[0].hasRecord)
+        check("今天的条目数等于任务数", week[0].entries.count == reopened.todos.count,
+              "got \(week[0].entries.count)")
+        check("今天全部打完", week[0].doneCount == reopened.todos.count)
+        check("今天算已打卡", week[0].complete)
+        check("昨天的记录还在", week[1].hasRecord && week[1].complete)
+        check("三天前只打了第一个孔", week[3].doneCount == 1, "got \(week[3].doneCount)")
+        check("三天前不算完成", !week[3].complete)
+        check("三天前条目仍然完整", week[3].entries.count == reopened.todos.count)
+        check("六天前没有记录", !week[6].hasRecord)
+        // 今天和昨天是完整的；两天前没有记录，三天前只打了一个孔。
+        check("最近七天完成天数", reopened.completedDays(in: 7) == 2,
+              "got \(reopened.completedDays(in: 7))")
+
+        print("尺寸与历史的存档")
+        reopened.setCardWidth(420)
+        reopened.setListHeight(260)
+        reopened.setHistoryOpen(true)
+        let reopened3 = Store(dataURL: url)
+        check("宽度能存下来", reopened3.cardWidth == 420, "got \(reopened3.cardWidth)")
+        check("任务区高度能存下来", reopened3.listHeight == 260,
+              "got \(String(describing: reopened3.listHeight))")
+        check("历史展开状态能存下来", reopened3.historyOpen)
+
         try? FileManager.default.removeItem(at: url)
         print(failures == 0 ? "\nall checks passed" : "\n\(failures) check(s) failed")
         exit(failures == 0 ? 0 : 1)

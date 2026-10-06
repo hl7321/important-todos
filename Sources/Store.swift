@@ -14,6 +14,23 @@ struct DayStamp: Identifiable {
     let complete: Bool
 }
 
+/// One day in the history drawer: what that day was asked to punch, and what it did.
+struct HistoryDay: Identifiable {
+    struct Entry: Identifiable {
+        let id: String
+        let title: String
+        let done: Bool
+    }
+
+    var id: Date { date }
+    let date: Date
+    let complete: Bool
+    let hasRecord: Bool
+    let entries: [Entry]
+
+    var doneCount: Int { entries.filter(\.done).count }
+}
+
 private struct SavedState: Codable {
     var todos: [Todo]
     var log: [String: [String]]
@@ -23,6 +40,11 @@ private struct SavedState: Codable {
     var floating: Bool?
     var frameX: Double?
     var frameY: Double?
+    /// Card size the user dragged out. Missing means "never touched".
+    var cardWidth: Double?
+    /// Height of the task area. Missing (or nil) means "as tall as the tasks are".
+    var listHeight: Double?
+    var historyOpen: Bool?
 }
 
 /// Everything the card knows: today's list, the completion log keyed by calendar day,
@@ -32,6 +54,14 @@ final class Store: ObservableObject {
     @Published var log: [String: [String]]
     @Published var needed: [String: [String]]
     @Published var floating: Bool
+    /// Width of the card, dragged from its side edges.
+    @Published var cardWidth: Double
+    /// Height of the task area, dragged from the bottom edge. nil means fit the content.
+    @Published var listHeight: Double?
+    @Published var historyOpen: Bool
+    /// Height the task area currently wants when nothing has been dragged. Kept so the
+    /// bottom edge can start from where the card already is.
+    @Published private(set) var measuredListHeight: Double = 0
     /// Advanced on a slow timer so the card rolls over at midnight without a relaunch.
     @Published private(set) var now = Date()
     /// Bumped when the card is called back from the menu bar or by opening the app again,
@@ -49,6 +79,12 @@ final class Store: ObservableObject {
         Todo(id: "starter-2", title: "读书 30 分钟"),
         Todo(id: "starter-3", title: "运动 20 分钟"),
     ]
+
+    static let defaultWidth: Double = 292
+    static let minWidth: Double = 240
+    static let maxWidth: Double = 680
+    static let minListHeight: Double = 84
+    static let maxListHeight: Double = 900
 
     private static let keyFormatter: DateFormatter = {
         let formatter = DateFormatter()
@@ -76,6 +112,9 @@ final class Store: ObservableObject {
             log = saved.log
             needed = saved.needed ?? [:]
             floating = saved.floating ?? true
+            cardWidth = saved.cardWidth ?? Store.defaultWidth
+            listHeight = saved.listHeight
+            historyOpen = saved.historyOpen ?? false
             if let x = saved.frameX, let y = saved.frameY {
                 frameOrigin = CGPoint(x: x, y: y)
             }
@@ -84,6 +123,9 @@ final class Store: ObservableObject {
             log = [:]
             needed = [:]
             floating = true
+            cardWidth = Store.defaultWidth
+            listHeight = nil
+            historyOpen = false
         }
         clock = Timer.publish(every: 30, on: .main, in: .common)
             .autoconnect()
@@ -146,6 +188,74 @@ final class Store: ObservableObject {
             let day = Store.date(daysAgo: offset, from: now)
             return DayStamp(date: day, complete: isComplete(day))
         }
+    }
+
+    /// The last `days` days, newest first, each with the tasks it was asked to punch and
+    /// whether they were punched. Titles come from today's list, so a retired task leaves
+    /// no orphan line behind.
+    func history(days: Int = 7) -> [HistoryDay] {
+        let titles = Dictionary(uniqueKeysWithValues: todos.map { ($0.id, $0.title) })
+        return stride(from: 0, to: days, by: 1).map { offset in
+            let day = Store.date(daysAgo: offset, from: now)
+            let key = Store.key(for: day)
+            let required = needed[key] ?? log[key] ?? []
+            let done = Set(log[key] ?? [])
+            let entries = required.compactMap { id -> HistoryDay.Entry? in
+                guard let title = titles[id] else { return nil }
+                return HistoryDay.Entry(id: id, title: title, done: done.contains(id))
+            }
+            let hasRecord = needed[key] != nil || log[key] != nil
+            return HistoryDay(date: day,
+                              complete: isComplete(day),
+                              hasRecord: hasRecord && !required.isEmpty,
+                              entries: entries)
+        }
+    }
+
+    /// Days in the recent window that finished.
+    func completedDays(in days: Int = 7) -> Int {
+        recentDays(days).filter(\.complete).count
+    }
+
+    // MARK: - Size
+
+    func setCardWidth(_ width: Double, persist: Bool = true) {
+        let clamped = min(max(width.rounded(), Store.minWidth), Store.maxWidth)
+        guard clamped != cardWidth else { return }
+        cardWidth = clamped
+        if persist { save() }
+    }
+
+    /// nil restores "as tall as the tasks are".
+    func setListHeight(_ height: Double?, persist: Bool = true) {
+        guard let height else {
+            guard listHeight != nil else { return }
+            listHeight = nil
+            if persist { save() }
+            return
+        }
+        let clamped = min(max(height.rounded(), Store.minListHeight), Store.maxListHeight)
+        guard clamped != listHeight else { return }
+        listHeight = clamped
+        if persist { save() }
+    }
+
+    /// Reported by the card after layout; only meaningful while the height is automatic.
+    func noteListHeight(_ height: Double) {
+        guard listHeight == nil, height > 1, abs(height - measuredListHeight) > 0.5 else { return }
+        measuredListHeight = height
+    }
+
+    func resetCardSize() {
+        cardWidth = Store.defaultWidth
+        listHeight = nil
+        save()
+    }
+
+    func setHistoryOpen(_ open: Bool) {
+        guard open != historyOpen else { return }
+        historyOpen = open
+        save()
     }
 
     // MARK: - Edits
@@ -224,7 +334,10 @@ final class Store: ObservableObject {
                                needed: needed,
                                floating: floating,
                                frameX: frameOrigin.map { Double($0.x) },
-                               frameY: frameOrigin.map { Double($0.y) })
+                               frameY: frameOrigin.map { Double($0.y) },
+                               cardWidth: cardWidth,
+                               listHeight: listHeight,
+                               historyOpen: historyOpen)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         guard let data = try? encoder.encode(state) else { return }

@@ -28,19 +28,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             panel.show()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
                 let shown = self.panel.verifyReport
-                // The collapse button calls exactly this, so the hide path is exercised.
-                self.panel.hide()
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
-                    let hidden = self.panel.verifyReport
-                    let report = """
-                    == after show ==
-                    \(shown)
-                    == after hide ==
-                    \(hidden)
+                // Exercise the resize plumbing the same way the edge handles do.
+                self.store.setCardWidth(460, persist: false)
+                self.store.setListHeight(300, persist: false)
+                self.store.setHistoryOpen(true)
+                self.panel.fitHeight()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                    let resized = self.panel.verifyReport
+                    self.panel.hide()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                        let hidden = self.panel.verifyReport
+                        let report = """
+                        == after show ==
+                        \(shown)
+                        == after resize (width 460, list height 300, history open) ==
+                        \(resized)
+                        == after hide ==
+                        \(hidden)
 
-                    """
-                    FileHandle.standardError.write(Data(report.utf8))
-                    NSApp.terminate(nil)
+                        """
+                        FileHandle.standardError.write(Data(report.utf8))
+                        NSApp.terminate(nil)
+                    }
                 }
             }
         }

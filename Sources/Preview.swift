@@ -3,6 +3,11 @@ import SwiftUI
 
 // Renders the card to PNG files so the design can be judged without a live window.
 // Build with ./build.sh --preview; it is not part of the shipping app.
+//
+// One state is deliberately missing here: the open history drawer. ImageRenderer does
+// not draw the contents of a ScrollView (the region comes out transparent), and the
+// drawer is a ScrollView by design. preview/history.png is therefore a real screen
+// capture of the running card rather than a render — see DESIGN.md.
 
 @MainActor
 func render(_ view: some View, to path: String, scale: CGFloat = 2) {
@@ -28,7 +33,10 @@ func day(_ offset: Int) -> String {
 
 /// Synthetic content for the previews only: five recurring tasks and a five day run
 /// behind today.
-func sampleStore(allDone: Bool, empty: Bool = false) -> Store {
+func sampleStore(allDone: Bool,
+                 empty: Bool = false,
+                 historyOpen: Bool = false,
+                 width: Double = 292) -> Store {
     let url = URL(fileURLWithPath: NSTemporaryDirectory())
         .appendingPathComponent("dailycheck-preview-\(UUID().uuidString).json")
     let todos: [[String: String]] = empty ? [] : [
@@ -41,9 +49,15 @@ func sampleStore(allDone: Bool, empty: Bool = false) -> Store {
     let ids = todos.compactMap { $0["id"] }
     var log: [String: [String]] = [:]
     for offset in 1...5 { log[day(offset)] = ids }
+    // One day short of finished, so the history shows a partly punched day too.
+    log[day(4)] = Array(ids.prefix(3))
     log[day(0)] = allDone ? ids : ["t1", "t2"]
 
-    let payload: [String: Any] = ["todos": todos, "log": log, "floating": true]
+    let payload: [String: Any] = ["todos": todos,
+                                  "log": log,
+                                  "floating": true,
+                                  "historyOpen": historyOpen,
+                                  "cardWidth": width]
     if let data = try? JSONSerialization.data(withJSONObject: payload) {
         try? data.write(to: url)
     }
@@ -75,6 +89,7 @@ struct PreviewRunner {
             (sampleStore(allDone: false), .dark, "2A2D33", "dark"),
             (sampleStore(allDone: true), .dark, "2A2D33", "dark-done"),
             (sampleStore(allDone: false, empty: true), .light, "7A7F87", "empty"),
+            (sampleStore(allDone: false, width: 448), .light, "7A7F87", "wide"),
         ]
         for (store, scheme, ground, name) in cases {
             render(framed(store, scheme, ground: ground), to: "\(outDir)/\(name).png")

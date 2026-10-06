@@ -1,6 +1,15 @@
 import AppKit
 import SwiftUI
 
+/// Lets the card tell the store how tall the task area wants to be, so the bottom edge
+/// can be dragged from wherever the card already is.
+private struct ListHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
 struct WidgetView: View {
     @ObservedObject var store: Store
     /// Called when the card should get out of the way (Escape).
@@ -12,13 +21,15 @@ struct WidgetView: View {
     @State private var editingID: String?
     @State private var editingText = ""
     @State private var hoverAdd = false
+    @State private var hoverHistory = false
     @State private var summonPop = false
     @FocusState private var draftFocused: Bool
     @FocusState private var editFocused: Bool
 
-    static let width: CGFloat = 292
     private let rowHeight: CGFloat = 30
+    private let historyRowHeight: CGFloat = 19
     private let marginX: CGFloat = 19
+    private let historyWindowHeight: CGFloat = 266
 
     private static let dateLine: DateFormatter = {
         let formatter = DateFormatter()
@@ -37,12 +48,14 @@ struct WidgetView: View {
             header
             titleRule
             list
+            if store.historyOpen { historySection }
             footerRule
             footer
         }
         .padding(.init(top: 13, leading: 15, bottom: 12, trailing: 15))
-        .frame(width: Self.width, alignment: .topLeading)
+        .frame(width: CGFloat(store.cardWidth), alignment: .topLeading)
         .background(PaperCard())
+        .onPreferenceChange(ListHeightKey.self) { store.noteListHeight(Double($0)) }
         // The card answers when it is called: a small nudge, no flashing.
         .scaleEffect(summonPop ? 1.012 : 1)
         .onChange(of: store.summonTick) { _ in
@@ -53,6 +66,7 @@ struct WidgetView: View {
         .animation(.spring(response: 0.34, dampingFraction: 0.72), value: store.allDone)
         .animation(.easeOut(duration: 0.18), value: store.todos.map(\.id))
         .animation(.easeOut(duration: 0.18), value: adding)
+        .animation(.easeOut(duration: 0.22), value: store.historyOpen)
     }
 
     // MARK: - Header
@@ -102,6 +116,7 @@ struct WidgetView: View {
                 rows
             }
             addRow
+            historyRow
         }
         .overlay(alignment: .leading) { marginRule }
     }
@@ -131,12 +146,18 @@ struct WidgetView: View {
                         onDelete: { store.remove(todo) })
             }
         }
-        if store.todos.count > 10 {
+        if let limit = store.listHeight {
+            // The user dragged the bottom edge: hold that height and scroll the rest.
             ScrollView(.vertical) { content }
-                .frame(height: rowHeight * 10)
-                .scrollIndicators(.hidden)
+                .frame(height: CGFloat(limit))
+                .scrollIndicators(.automatic)
         } else {
             content
+                .background(
+                    GeometryReader { proxy in
+                        Color.clear.preference(key: ListHeightKey.self, value: proxy.size.height)
+                    }
+                )
         }
     }
 
@@ -190,6 +211,31 @@ struct WidgetView: View {
         }
     }
 
+    /// The way into the history: it expands downwards, inside the same card.
+    private var historyRow: some View {
+        Button(action: { store.setHistoryOpen(!store.historyOpen) }) {
+            HStack(spacing: 9) {
+                Image(systemName: "clock.arrow.circlepath")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(hoverHistory ? theme.stamp : theme.inkSoft)
+                    .frame(width: 15)
+                Text(store.historyOpen ? "收起历史待办" : "查看历史待办")
+                    .font(Face.task)
+                    .foregroundStyle(hoverHistory ? theme.ink : theme.inkSoft)
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundStyle(theme.inkSoft)
+                    .rotationEffect(.degrees(store.historyOpen ? 180 : 0))
+            }
+            .frame(height: rowHeight)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hoverHistory = $0 }
+        .help(store.historyOpen ? "收起历史" : "看最近 7 天的打卡记录")
+    }
+
     private var emptyState: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text("这张卡还没有印上内容")
@@ -204,6 +250,39 @@ struct WidgetView: View {
         .padding(.vertical, 12)
         .overlay(alignment: .bottom) {
             Rectangle().fill(theme.rule).frame(height: 1)
+        }
+    }
+
+    // MARK: - History
+
+    private var historySection: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Rectangle().fill(theme.rule).frame(height: 1)
+            HStack(spacing: 6) {
+                Text("最近 7 天")
+                    .font(Face.meta(10, .semibold))
+                    .tracking(0.4)
+                    .foregroundStyle(theme.ink)
+                Spacer(minLength: 4)
+                Text("完成 \(store.completedDays(in: 7)) / 7 天")
+                    .font(Face.meta(10))
+                    .foregroundStyle(theme.inkSoft)
+            }
+            .padding(.vertical, 7)
+
+            ScrollView(.vertical) {
+                VStack(alignment: .leading, spacing: 0) {
+                    let days = store.history(days: 7)
+                    ForEach(Array(days.enumerated()), id: \.element.id) { index, day in
+                        HistoryDayBlock(day: day,
+                                        isToday: Calendar.current.isDateInToday(day.date),
+                                        isLast: index == days.count - 1,
+                                        rowHeight: historyRowHeight)
+                    }
+                }
+            }
+            .frame(height: historyWindowHeight)
+            .scrollIndicators(.automatic)
         }
     }
 
@@ -318,7 +397,6 @@ private struct TaskRow: View {
     var body: some View {
         HStack(spacing: 9) {
             Punch(done: done, pulse: pulse)
-                .frame(width: 15, height: 15)
 
             if isEditing {
                 TextField("", text: $editText)
@@ -328,11 +406,14 @@ private struct TaskRow: View {
                     .focused(editFocused)
                     .onSubmit(onCommitEditing)
             } else {
+                // No line limit: a long task wraps and the row grows, so nothing is
+                // hidden just because the card is narrow.
                 Text(todo.title)
                     .font(done ? Face.taskDone : Face.task)
                     .strikethrough(done, color: theme.inkSoft)
                     .foregroundStyle(done ? theme.inkSoft : theme.ink)
-                    .lineLimit(1)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .multilineTextAlignment(.leading)
             }
 
             Spacer(minLength: 4)
@@ -344,7 +425,8 @@ private struct TaskRow: View {
                 }
             }
         }
-        .frame(height: height)
+        .padding(.vertical, 5)
+        .frame(minHeight: height)
         .contentShape(Rectangle())
         .onTapGesture {
             if isEditing { onCommitEditing() } else { onTap() }
@@ -415,6 +497,72 @@ private struct CollapseButton: View {
     }
 }
 
+// MARK: - History blocks
+
+/// One day in the history drawer: the date and its tally on the first line, then that
+/// day's tasks with the punches it actually got.
+private struct HistoryDayBlock: View {
+    @Environment(\.cardTheme) private var theme
+
+    let day: HistoryDay
+    let isToday: Bool
+    let isLast: Bool
+    let rowHeight: CGFloat
+
+    private static let label: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "MM-dd EEE"
+        return formatter
+    }()
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 6) {
+                Text(isToday ? "今天" : Self.label.string(from: day.date))
+                    .font(Face.meta(10, isToday ? .semibold : .medium))
+                    .foregroundStyle(isToday ? theme.ink : theme.inkSoft)
+                Spacer(minLength: 4)
+                if day.hasRecord {
+                    if day.complete { Stamp(compact: true) }
+                    Text("\(day.doneCount) / \(day.entries.count)")
+                        .font(Face.meta(9.5, day.complete ? .semibold : .regular))
+                        .foregroundStyle(day.complete ? theme.stamp : theme.inkSoft)
+                }
+            }
+            .frame(height: 20)
+
+            if day.hasRecord {
+                ForEach(day.entries) { entry in
+                    HStack(spacing: 7) {
+                        Punch(done: entry.done, pulse: false, size: 10)
+                        Text(entry.title)
+                            .font(.system(size: 11))
+                            .foregroundStyle(entry.done ? theme.inkSoft : theme.ink)
+                            .strikethrough(entry.done, color: theme.inkSoft)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: 0)
+                    }
+                    .frame(minHeight: rowHeight, alignment: .leading)
+                }
+            } else {
+                Text(isToday ? "今天还没有记录" : "没有记录")
+                    .font(.system(size: 10))
+                    .foregroundStyle(theme.inkSoft.opacity(0.85))
+                    .frame(minHeight: rowHeight, alignment: .leading)
+            }
+
+            if !isLast {
+                Rectangle()
+                    .fill(theme.rule.opacity(0.7))
+                    .frame(height: 1)
+                    .padding(.top, 5)
+                    .padding(.bottom, 5)
+            }
+        }
+    }
+}
+
 /// One position on the card. An unfinished task is a hollow outline; finishing it
 /// leaves a solid stamp behind an ink ring that expands once and fades.
 private struct Punch: View {
@@ -422,6 +570,7 @@ private struct Punch: View {
 
     let done: Bool
     let pulse: Bool
+    var size: CGFloat = 15
 
     var body: some View {
         ZStack {
@@ -440,11 +589,12 @@ private struct Punch: View {
                 .opacity(done ? 1 : 0)
 
             Image(systemName: "checkmark")
-                .font(.system(size: 7, weight: .bold))
+                .font(.system(size: size * 0.47, weight: .bold))
                 .foregroundStyle(theme.paper)
                 .scaleEffect(done ? 1 : 0.4)
                 .opacity(done ? 1 : 0)
         }
+        .frame(width: size, height: size)
         .animation(.spring(response: 0.28, dampingFraction: 0.62), value: done)
     }
 }
@@ -485,17 +635,18 @@ private struct DayCell: View {
 /// The mark a finished day earns.
 struct Stamp: View {
     @Environment(\.cardTheme) private var theme
+    var compact = false
 
     var body: some View {
         Text("已打卡")
-            .font(Face.stampText)
-            .tracking(2)
+            .font(compact ? .system(size: 9, weight: .bold) : Face.stampText)
+            .tracking(compact ? 1.2 : 2)
             .foregroundStyle(theme.stamp)
-            .padding(.horizontal, 5)
-            .padding(.vertical, 2)
+            .padding(.horizontal, compact ? 4 : 5)
+            .padding(.vertical, compact ? 1 : 2)
             .overlay(
                 RoundedRectangle(cornerRadius: 3, style: .continuous)
-                    .strokeBorder(theme.stamp, lineWidth: 1.4)
+                    .strokeBorder(theme.stamp, lineWidth: compact ? 1 : 1.4)
             )
             .rotationEffect(.degrees(-6))
             .opacity(0.92)

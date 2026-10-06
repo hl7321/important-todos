@@ -17,7 +17,7 @@ APP="$HERE/build/重要待办.app"
 EXEC="DailyCheck"
 SOURCES=(Sources/main.swift Sources/Store.swift Sources/Theme.swift
          Sources/WidgetView.swift Sources/Panel.swift Sources/StatusBar.swift
-         Sources/HotKey.swift)
+         Sources/HotKey.swift Sources/Resize.swift)
 
 echo "==> compiling"
 rm -rf "$APP"
