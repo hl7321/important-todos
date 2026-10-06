@@ -111,7 +111,15 @@ final class PanelController {
 
     private func growWidth(by delta: CGFloat, anchoredRight: Bool) {
         guard delta != 0 else { return }
-        store.setCardWidth(store.cardWidth + Double(delta), persist: false)
+        // Never let an edge be dragged past the screen, or the handle you are holding
+        // becomes unreachable. With the right edge pinned, the left edge may move at
+        // most to the screen's left side, and the other way around.
+        let limit = screenFrame
+        let room = anchoredRight
+            ? panel.frame.maxX - limit.minX
+            : limit.maxX - panel.frame.minX
+        let target = min(store.cardWidth + Double(delta), Double(max(room, CGFloat(Store.minWidth))))
+        store.setCardWidth(target, persist: false)
         var frame = panel.frame
         let top = frame.maxY
         let right = frame.maxX
@@ -124,8 +132,17 @@ final class PanelController {
     private func growListHeight(by delta: CGFloat) {
         guard delta != 0 else { return }
         let base = store.listHeight ?? max(store.measuredListHeight, Store.minListHeight)
-        store.setListHeight(base + Double(delta), persist: false)
+        // The card grows downwards from a fixed top edge, so the bottom edge can only
+        // travel as far as the bottom of the screen.
+        let limit = screenFrame
+        let roomBelow = max(0, panel.frame.maxY - limit.minY - panel.frame.height)
+        let clamped = min(delta, roomBelow)
+        store.setListHeight(base + Double(clamped), persist: false)
         fitHeight()
+    }
+
+    private var screenFrame: NSRect {
+        (panel.screen ?? NSScreen.main)?.visibleFrame ?? .zero
     }
 
     private func commitResize() {
@@ -140,10 +157,28 @@ final class PanelController {
 
     private func place() {
         if let origin = store.frameOrigin, isOnAScreen(origin) {
-            panel.setFrameOrigin(origin)
+            panel.setFrameOrigin(keepOnScreen(origin, size: panel.frame.size))
             return
         }
         moveToDefaultCorner()
+    }
+
+    /// Bring a remembered position back inside the display so the card (and its resize
+    /// edges) can never be left stranded off-screen.
+    private func keepOnScreen(_ origin: CGPoint, size: NSSize) -> CGPoint {
+        let screen = NSScreen.screens.first {
+            $0.visibleFrame.insetBy(dx: -200, dy: -200).contains(origin)
+        } ?? NSScreen.main
+        guard let limit = screen?.visibleFrame else { return origin }
+        var point = origin
+        point.x = min(max(point.x, limit.minX), max(limit.maxX - size.width, limit.minX))
+        if size.height <= limit.height {
+            point.y = min(max(point.y, limit.minY), limit.maxY - size.height)
+        } else {
+            // Taller than the display: keep the top visible, let the bottom overflow.
+            point.y = limit.maxY - size.height
+        }
+        return point
     }
 
     /// Top-right of the screen the pointer is on, clear of the menu bar.
