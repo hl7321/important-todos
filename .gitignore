@@ -1,0 +1,8 @@
+# 编译产物
+build/
+
+# 临时文件与旧的渲染输出
+work/
+
+# macOS
+.DS_Store
