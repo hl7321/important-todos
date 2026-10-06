@@ -36,10 +36,11 @@ func day(_ offset: Int) -> String {
 func sampleStore(allDone: Bool,
                  empty: Bool = false,
                  historyOpen: Bool = false,
+                 tomorrowOpen: Bool = false,
                  width: Double = 292) -> Store {
     let url = URL(fileURLWithPath: NSTemporaryDirectory())
         .appendingPathComponent("dailycheck-preview-\(UUID().uuidString).json")
-    let todos: [[String: String]] = empty ? [] : [
+    var todos: [[String: String]] = empty ? [] : [
         ["id": "t1", "title": "喝水 8 杯"],
         ["id": "t2", "title": "读书 30 分钟"],
         ["id": "t3", "title": "运动 20 分钟"],
@@ -47,6 +48,11 @@ func sampleStore(allDone: Bool,
         ["id": "t5", "title": "23:30 前关灯"],
     ]
     let ids = todos.compactMap { $0["id"] }
+    if tomorrowOpen {
+        let key = Store.key(for: Calendar.current.date(byAdding: .day, value: 1, to: Date())!)
+        todos.append(["id": "p1", "title": "复习 state 共享信息如何保证上下文", "day": key])
+        todos.append(["id": "p2", "title": "整理五类工具失败的治理方案", "day": key])
+    }
     var log: [String: [String]] = [:]
     for offset in 1...5 { log[day(offset)] = ids }
     // One day short of finished, so the history shows a partly punched day too.
@@ -57,6 +63,7 @@ func sampleStore(allDone: Bool,
                                   "log": log,
                                   "floating": true,
                                   "historyOpen": historyOpen,
+                                  "tomorrowOpen": tomorrowOpen,
                                   "cardWidth": width]
     if let data = try? JSONSerialization.data(withJSONObject: payload) {
         try? data.write(to: url)
@@ -89,6 +96,7 @@ struct PreviewRunner {
             (sampleStore(allDone: false), .dark, "2A2D33", "dark"),
             (sampleStore(allDone: true), .dark, "2A2D33", "dark-done"),
             (sampleStore(allDone: false, empty: true), .light, "7A7F87", "empty"),
+            (sampleStore(allDone: false, tomorrowOpen: true), .light, "7A7F87", "tomorrow"),
             (sampleStore(allDone: false, width: 448), .light, "7A7F87", "wide"),
         ]
         for (store, scheme, ground, name) in cases {

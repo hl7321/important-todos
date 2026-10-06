@@ -35,6 +35,7 @@ final class PanelController {
         window level=\(panel.level.rawValue) visible=\(panel.isVisible) movableByBackground=\(panel.isMovableByWindowBackground)
         content fitting=\(hosting.fittingSize) actual=\(panel.contentView?.frame.size ?? .zero)
         card width=\(store.cardWidth) list height=\(store.listHeight.map { String(Int($0)) } ?? "auto") measured=\(Int(store.measuredListHeight)) history=\(store.historyOpen)
+        today=\(store.todayTodos.count) tomorrow=\(store.tomorrowTodos.count) drawer=\(store.tomorrowOpen)
         resize handles \(handles)
         this process has \(onScreen) window(s) on screen
         screen visible frame=\(screen)

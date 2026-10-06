@@ -22,9 +22,12 @@ struct WidgetView: View {
     @State private var editingText = ""
     @State private var hoverAdd = false
     @State private var hoverHistory = false
+    @State private var hoverTomorrow = false
+    @State private var tomorrowDraft = ""
     @State private var summonPop = false
     @FocusState private var draftFocused: Bool
     @FocusState private var editFocused: Bool
+    @FocusState private var tomorrowFocused: Bool
 
     private let rowHeight: CGFloat = 30
     private let historyRowHeight: CGFloat = 19
@@ -47,8 +50,7 @@ struct WidgetView: View {
         VStack(alignment: .leading, spacing: 0) {
             header
             titleRule
-            list
-            if store.historyOpen { historySection }
+            ruled
             footerRule
             footer
         }
@@ -66,6 +68,7 @@ struct WidgetView: View {
         .animation(.spring(response: 0.34, dampingFraction: 0.72), value: store.allDone)
         .animation(.easeOut(duration: 0.18), value: store.todos.map(\.id))
         .animation(.easeOut(duration: 0.18), value: adding)
+        .animation(.easeOut(duration: 0.22), value: store.tomorrowOpen)
         .animation(.easeOut(duration: 0.22), value: store.historyOpen)
     }
 
@@ -85,7 +88,7 @@ struct WidgetView: View {
             Spacer(minLength: 6)
             HStack(alignment: .top, spacing: 8) {
                 VStack(alignment: .trailing, spacing: 3) {
-                    Text("\(store.doneCount) / \(store.todos.count)")
+                    Text("\(store.doneCount) / \(store.todayTodos.count)")
                         .font(Face.meta(13, .semibold))
                         .foregroundStyle(store.allDone ? theme.stamp : theme.ink)
                     Text(store.allDone ? "全部完成" : "已完成")
@@ -108,15 +111,20 @@ struct WidgetView: View {
 
     // MARK: - Task list
 
-    private var list: some View {
+    /// Everything written on the ruled part of the card — today's lines, the control
+    /// rows, and whichever drawer is open — sharing one margin rule down the left.
+    private var ruled: some View {
         Group {
-            if store.todos.isEmpty {
+            if store.todayTodos.isEmpty {
                 emptyState
             } else {
                 rows
             }
             addRow
+            tomorrowRow
+            if store.tomorrowOpen { tomorrowSection }
             historyRow
+            if store.historyOpen { historySection }
         }
         .overlay(alignment: .leading) { marginRule }
     }
@@ -131,11 +139,14 @@ struct WidgetView: View {
 
     @ViewBuilder
     private var rows: some View {
+        // Only today's list: recurring tasks plus whatever was planned for today.
+        // Tomorrow's items live in their own drawer until the day comes.
+        let items = store.todayTodos
         let content = VStack(spacing: 0) {
-            ForEach(store.todos) { todo in
+            ForEach(items) { todo in
                 TaskRow(todo: todo,
                         done: store.isDone(todo, on: store.now),
-                        isLast: todo.id == store.todos.last?.id,
+                        isLast: todo.id == items.last?.id,
                         height: rowHeight,
                         isEditing: editingID == todo.id,
                         editText: $editingText,
@@ -211,9 +222,117 @@ struct WidgetView: View {
         }
     }
 
+    /// Planning tomorrow. Whatever is written here becomes part of that day's list on
+    /// its own — nothing has to be done to it at midnight.
+    private var tomorrowRow: some View {
+        Button(action: toggleTomorrow) {
+            HStack(spacing: 9) {
+                Image(systemName: "sunrise")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(hoverTomorrow ? theme.stamp : theme.inkSoft)
+                    .frame(width: 15)
+                Text(store.tomorrowTodos.isEmpty ? "给明天加一件事" : "明日待办")
+                    .font(Face.task)
+                    .foregroundStyle(hoverTomorrow ? theme.ink : theme.inkSoft)
+                Spacer(minLength: 4)
+                if !store.tomorrowTodos.isEmpty {
+                    Text("\(store.tomorrowTodos.count) 项")
+                        .font(Face.meta(9.5))
+                        .foregroundStyle(theme.inkSoft)
+                }
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundStyle(theme.inkSoft)
+                    .rotationEffect(.degrees(store.tomorrowOpen ? 180 : 0))
+            }
+            .frame(height: rowHeight)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hoverTomorrow = $0 }
+        .help("安排明天的重要事项；到第二天它会自动成为今日待办")
+    }
+
+    private var tomorrowSection: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Rectangle().fill(theme.rule).frame(height: 1)
+
+            HStack(spacing: 6) {
+                Text("明天 \(Store.shortDay(store.tomorrow))")
+                    .font(Face.meta(10, .semibold))
+                    .foregroundStyle(theme.ink)
+                Spacer(minLength: 4)
+                Text("第二天自动进今日待办")
+                    .font(Face.meta(9))
+                    .foregroundStyle(theme.inkSoft)
+            }
+            .padding(.leading, 24)
+            .padding(.vertical, 7)
+
+            HStack(spacing: 9) {
+                Image(systemName: "plus")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(theme.stamp)
+                    .frame(width: 15)
+                TextField("明天要做的事…", text: $tomorrowDraft)
+                    .textFieldStyle(.plain)
+                    .font(Face.task)
+                    .foregroundStyle(theme.ink)
+                    .focused($tomorrowFocused)
+                    .onSubmit(commitTomorrowDraft)
+                if !tomorrowDraft.isEmpty {
+                    Button(action: { tomorrowDraft = "" }) {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 8, weight: .bold))
+                            .foregroundStyle(theme.inkSoft)
+                            .frame(width: 14, height: 14)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("清空这行")
+                }
+            }
+            .frame(height: rowHeight)
+            .overlay(alignment: .bottom) {
+                Rectangle().fill(theme.rule).frame(height: 1)
+            }
+
+            if store.tomorrowTodos.isEmpty {
+                Text("还没有给明天安排的事")
+                    .font(.system(size: 10))
+                    .foregroundStyle(theme.inkSoft.opacity(0.85))
+                    .padding(.leading, 24)
+                    .padding(.vertical, 9)
+            } else if store.tomorrowTodos.count <= 5 {
+                plannedRows(store.tomorrowTodos)
+            } else {
+                ScrollView(.vertical) {
+                    plannedRows(store.tomorrowTodos)
+                }
+                .frame(maxHeight: 168)
+                .scrollIndicators(.automatic)
+            }
+        }
+    }
+
+    private func plannedRows(_ items: [Todo]) -> some View {
+        VStack(spacing: 0) {
+            ForEach(items) { todo in
+                PlanRow(todo: todo,
+                        isLast: todo.id == items.last?.id,
+                        isEditing: editingID == todo.id,
+                        editText: $editingText,
+                        editFocused: $editFocused,
+                        onStartEditing: { startEditing(todo) },
+                        onCommitEditing: { commitEditing(todo) },
+                        onDelete: { store.remove(todo) })
+            }
+        }
+    }
+
     /// The way into the history: it expands downwards, inside the same card.
     private var historyRow: some View {
-        Button(action: { store.setHistoryOpen(!store.historyOpen) }) {
+        Button(action: toggleHistory) {
             HStack(spacing: 9) {
                 Image(systemName: "clock.arrow.circlepath")
                     .font(.system(size: 9, weight: .bold))
@@ -268,6 +387,7 @@ struct WidgetView: View {
                     .font(Face.meta(10))
                     .foregroundStyle(theme.inkSoft)
             }
+            .padding(.leading, 24)
             .padding(.vertical, 7)
 
             ScrollView(.vertical) {
@@ -328,6 +448,27 @@ struct WidgetView: View {
 
     // MARK: - Actions
 
+    /// Only one drawer at a time, so the card never turns into a scroll of drawers.
+    private func toggleTomorrow() {
+        let opening = !store.tomorrowOpen
+        if opening { store.setHistoryOpen(false) }
+        store.setTomorrowOpen(opening)
+        if opening { tomorrowFocused = true }
+    }
+
+    private func toggleHistory() {
+        let opening = !store.historyOpen
+        if opening { store.setTomorrowOpen(false) }
+        store.setHistoryOpen(opening)
+    }
+
+    private func commitTomorrowDraft() {
+        let title = tomorrowDraft
+        tomorrowDraft = ""
+        store.addTomorrow(title: title)
+        tomorrowFocused = true
+    }
+
     private func punch(_ todo: Todo) {
         let wasDone = store.isDone(todo, on: store.now)
         store.toggle(todo)
@@ -364,7 +505,9 @@ struct WidgetView: View {
     /// card. Dismissing hides the panel; the menu bar icon or opening the app again
     /// brings it back.
     private func handleEscape() {
-        if adding {
+        if !tomorrowDraft.isEmpty {
+            tomorrowDraft = ""
+        } else if adding {
             cancelDraft()
         } else if editingID != nil {
             editingID = nil
@@ -470,6 +613,67 @@ private struct RowAction: View {
     }
 }
 
+/// An item waiting for tomorrow. It carries a hollow, smaller marker because it is not
+/// a punch position yet — there is nothing to complete until the day arrives.
+private struct PlanRow: View {
+    @Environment(\.cardTheme) private var theme
+
+    let todo: Todo
+    let isLast: Bool
+    let isEditing: Bool
+    @Binding var editText: String
+    var editFocused: FocusState<Bool>.Binding
+    let onStartEditing: () -> Void
+    let onCommitEditing: () -> Void
+    let onDelete: () -> Void
+
+    @State private var hovered = false
+
+    var body: some View {
+        HStack(spacing: 9) {
+            Circle()
+                .strokeBorder(theme.marginRule, lineWidth: 1)
+                .frame(width: 11, height: 11)
+                .frame(width: 15)
+
+            if isEditing {
+                TextField("", text: $editText)
+                    .textFieldStyle(.plain)
+                    .font(Face.task)
+                    .foregroundStyle(theme.ink)
+                    .focused(editFocused)
+                    .onSubmit(onCommitEditing)
+            } else {
+                Text(todo.title)
+                    .font(Face.task)
+                    .foregroundStyle(theme.ink)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .multilineTextAlignment(.leading)
+            }
+
+            Spacer(minLength: 4)
+
+            if hovered && !isEditing {
+                HStack(spacing: 2) {
+                    RowAction(symbol: "pencil", help: "改标题", action: onStartEditing)
+                    RowAction(symbol: "xmark", help: "不安排这一项了", action: onDelete)
+                }
+            }
+        }
+        .padding(.vertical, 5)
+        .frame(minHeight: 28)
+        .contentShape(Rectangle())
+        .onTapGesture { if isEditing { onCommitEditing() } }
+        .onHover { hovered = $0 }
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(theme.rule.opacity(0.7))
+                .frame(height: 1)
+                .opacity(isLast ? 0 : 1)
+        }
+    }
+}
+
 /// Puts the card away. This is the control the user can always see, so hiding never
 /// depends on the menu bar icon being reachable.
 private struct CollapseButton: View {
@@ -530,6 +734,7 @@ private struct HistoryDayBlock: View {
                         .foregroundStyle(day.complete ? theme.stamp : theme.inkSoft)
                 }
             }
+            .padding(.leading, 24)
             .frame(height: 20)
 
             if day.hasRecord {

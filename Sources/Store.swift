@@ -5,6 +5,10 @@ import SwiftUI
 struct Todo: Codable, Identifiable, Hashable {
     var id: String
     var title: String
+    /// nil means "every day" (the original behaviour). A day key means this one is only
+    /// needed on that date — that is how 明日待办 items are stored, and how they turn
+    /// into today's items without any other moving part.
+    var day: String? = nil
 }
 
 /// One day in the stamp column.
@@ -45,6 +49,7 @@ private struct SavedState: Codable {
     /// Height of the task area. Missing (or nil) means "as tall as the tasks are".
     var listHeight: Double?
     var historyOpen: Bool?
+    var tomorrowOpen: Bool?
 }
 
 /// Everything the card knows: today's list, the completion log keyed by calendar day,
@@ -59,6 +64,8 @@ final class Store: ObservableObject {
     /// Height of the task area, dragged from the bottom edge. nil means fit the content.
     @Published var listHeight: Double?
     @Published var historyOpen: Bool
+    /// Whether the "tomorrow" drawer is pulled out.
+    @Published var tomorrowOpen: Bool
     /// Height the task area currently wants when nothing has been dragged. Kept so the
     /// bottom edge can start from where the card already is.
     @Published private(set) var measuredListHeight: Double = 0
@@ -115,6 +122,7 @@ final class Store: ObservableObject {
             cardWidth = saved.cardWidth ?? Store.defaultWidth
             listHeight = saved.listHeight
             historyOpen = saved.historyOpen ?? false
+            tomorrowOpen = saved.tomorrowOpen ?? false
             if let x = saved.frameX, let y = saved.frameY {
                 frameOrigin = CGPoint(x: x, y: y)
             }
@@ -126,10 +134,13 @@ final class Store: ObservableObject {
             cardWidth = Store.defaultWidth
             listHeight = nil
             historyOpen = false
+            tomorrowOpen = false
         }
         clock = Timer.publish(every: 30, on: .main, in: .common)
             .autoconnect()
-            .sink { [weak self] date in self?.now = date }
+            .sink { [weak self] date in self?.advanceClock(to: date) }
+        // If the card was closed across midnight, finish the rollover now.
+        carryForwardOverdue()
     }
 
     // MARK: - Days
@@ -144,14 +155,54 @@ final class Store: ObservableObject {
         Set(log[Store.key(for: date)] ?? [])
     }
 
-    func isDone(_ todo: Todo, on date: Date = Date()) -> Bool {
+    // MARK: - Today, tomorrow, and recurring
+
+    var todayKey: String { Store.key(for: now) }
+
+    var tomorrow: Date { Store.date(daysAgo: -1, from: now) }
+    var tomorrowKey: String { Store.key(for: tomorrow) }
+
+    /// Every day's list: recurring tasks, plus anything scheduled for that one date.
+    func todos(on date: Date) -> [Todo] {
+        let key = Store.key(for: date)
+        return todos.filter { $0.day == nil || $0.day == key }
+    }
+
+    var todayTodos: [Todo] { todos(on: now) }
+
+    /// The items waiting for tomorrow, in the order they were written.
+    var tomorrowTodos: [Todo] {
+        let key = tomorrowKey
+        return todos.filter { $0.day == key }
+    }
+
+    /// Short label for a day, for the drawer header.
+    static func shortDay(_ date: Date) -> String {
+        shortDayFormatter.string(from: date)
+    }
+
+    private static let shortDayFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "MM-dd EEE"
+        return formatter
+    }()
+
+    /// Whether a task is punched on the card's current day. Deliberately no default
+    /// date parameter: a default of `Date()` would quietly mean "the wall clock today",
+    /// which is a different day from the card's whenever the clock has been moved.
+    func isDone(_ todo: Todo) -> Bool {
+        doneIDs(on: now).contains(todo.id)
+    }
+
+    func isDone(_ todo: Todo, on date: Date) -> Bool {
         doneIDs(on: date).contains(todo.id)
     }
 
     func isComplete(_ date: Date) -> Bool {
         // Days the card recorded carry their own requirement. For any day it never got
         // around to recording, today's list is the only honest guess.
-        let required = needed[Store.key(for: date)] ?? todos.map(\.id)
+        let required = needed[Store.key(for: date)] ?? todos(on: date).map(\.id)
         guard !required.isEmpty else { return false }
         let done = doneIDs(on: date)
         return required.allSatisfy { done.contains($0) }
@@ -160,12 +211,12 @@ final class Store: ObservableObject {
     /// Today's requirement always mirrors today's list: a task written today has to be
     /// punched today, and days already finished keep the requirement they were judged by.
     private func refreshTodayRequirement() {
-        needed[Store.key(for: now)] = todos.map(\.id)
+        needed[todayKey] = todayTodos.map(\.id)
     }
 
     var doneCount: Int {
         let done = doneIDs(on: now)
-        return todos.filter { done.contains($0.id) }.count
+        return todayTodos.filter { done.contains($0.id) }.count
     }
 
     var allDone: Bool { isComplete(now) }
@@ -258,9 +309,18 @@ final class Store: ObservableObject {
         save()
     }
 
+    func setTomorrowOpen(_ open: Bool) {
+        guard open != tomorrowOpen else { return }
+        tomorrowOpen = open
+        save()
+    }
+
     // MARK: - Edits
 
     func toggle(_ todo: Todo) {
+        // Only today's list can be punched. An item planned for tomorrow must not be
+        // able to leave a hole on today's card.
+        guard todayTodos.contains(where: { $0.id == todo.id }) else { return }
         refreshTodayRequirement()
         let key = Store.key(for: now)
         var done = Set(log[key] ?? [])
@@ -279,6 +339,38 @@ final class Store: ObservableObject {
         todos.append(Todo(id: UUID().uuidString, title: trimmed))
         refreshTodayRequirement()
         save()
+    }
+
+    /// Writes an item for tomorrow only. It is not required today, so today's tally and
+    /// the run stay untouched; tomorrow it is simply part of that day's list.
+    func addTomorrow(title: String) {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        todos.append(Todo(id: UUID().uuidString, title: trimmed, day: tomorrowKey))
+        save()
+    }
+
+    /// Moves an unfinished item that was planned for an earlier day onto today. A missed
+    /// day should not silently swallow something the user marked as important.
+    func carryForwardOverdue() {
+        let key = todayKey
+        var moved = false
+        for index in todos.indices {
+            guard let day = todos[index].day, day < key else { continue }
+            if (log[day] ?? []).contains(todos[index].id) { continue }
+            todos[index].day = key
+            moved = true
+        }
+        guard moved else { return }
+        if needed[key] != nil { refreshTodayRequirement() }
+        save()
+    }
+
+    /// The card's clock. The timer calls it, and the checks call it to travel a day.
+    func advanceClock(to date: Date) {
+        let previous = todayKey
+        now = date
+        if todayKey != previous { carryForwardOverdue() }
     }
 
     func rename(_ todo: Todo, to title: String) {
@@ -337,7 +429,8 @@ final class Store: ObservableObject {
                                frameY: frameOrigin.map { Double($0.y) },
                                cardWidth: cardWidth,
                                listHeight: listHeight,
-                               historyOpen: historyOpen)
+                               historyOpen: historyOpen,
+                               tomorrowOpen: tomorrowOpen)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         guard let data = try? encoder.encode(state) else { return }

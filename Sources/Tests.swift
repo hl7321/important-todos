@@ -160,6 +160,62 @@ struct TestRunner {
               "got \(String(describing: reopened3.listHeight))")
         check("历史展开状态能存下来", reopened3.historyOpen)
 
+        print("明日待办")
+        let tomorrowKey = Store.key(for: tomorrow)
+        let dayAfter = Calendar.current.date(byAdding: .day, value: 2, to: Date())!
+        let todayBefore = reopened3.todayTodos.count
+        reopened3.addTomorrow(title: "  明天要读的论文  ")
+        let planned = reopened3.tomorrowTodos
+        check("能加明天的待办", planned.count == 1, "got \(planned.count)")
+        check("标题去掉空白", planned.first?.title == "明天要读的论文")
+        check("它带着明天的日期", planned.first?.day == tomorrowKey)
+        check("今天的清单里没有它", !reopened3.todayTodos.contains { $0.id == planned.first?.id })
+        check("今天的条目数没变", reopened3.todayTodos.count == todayBefore,
+              "got \(reopened3.todayTodos.count)")
+        check("明天那天的清单里有它", reopened3.todos(on: tomorrow).count == todayBefore + 1,
+              "got \(reopened3.todos(on: tomorrow).count)")
+        reopened3.addTomorrow(title: "   ")
+        check("空标题被拒绝", reopened3.tomorrowTodos.count == 1)
+
+        print("第二天：自动变成今日待办")
+        let plannedID = planned.first!.id
+        reopened3.advanceClock(to: tomorrow)
+        check("时钟走到第二天", Calendar.current.isDate(reopened3.now, inSameDayAs: tomorrow))
+        check("它进了今日清单", reopened3.todayTodos.contains { $0.id == plannedID })
+        check("明日抽屉空了", reopened3.tomorrowTodos.isEmpty)
+        check("新的一天从零开始", reopened3.doneCount == 0, "got \(reopened3.doneCount)")
+        check("新的一天还没完成", !reopened3.allDone)
+        for todo in reopened3.todayTodos where !reopened3.isDone(todo) { reopened3.toggle(todo) }
+        check("第二天可以全部打完", reopened3.allDone)
+        check("打孔记录落在第二天", (reopened3.log[tomorrowKey] ?? []).contains(plannedID))
+        check("新的一天在历史里是完成的", reopened3.isComplete(tomorrow))
+
+        print("漏掉的一天会顺延，不会悄悄消失")
+        let carryURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("dailycheck-carry-\(UUID().uuidString).json")
+        let carried = Store(dataURL: carryURL)
+        carried.addTomorrow(title: "明天要做的重要事")
+        let carriedID = carried.tomorrowTodos.first!.id
+        carried.advanceClock(to: tomorrow)
+        carried.advanceClock(to: dayAfter)   // 第二天整天没打开过
+        check("没做完的明日待办顺延到今天", carried.todayTodos.contains { $0.id == carriedID })
+        check("顺延后不再是明天的待办", carried.tomorrowTodos.isEmpty)
+        check("它的日期被改成今天", carried.todayTodos.first { $0.id == carriedID }?.day == Store.key(for: dayAfter))
+
+        print("做完的明日待办不会顺延")
+        let doneURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("dailycheck-done-\(UUID().uuidString).json")
+        let finished = Store(dataURL: doneURL)
+        finished.addTomorrow(title: "做完的事")
+        let finishedID = finished.tomorrowTodos.first!.id
+        finished.advanceClock(to: tomorrow)
+        finished.toggle(finished.todos.first { $0.id == finishedID }!)
+        finished.advanceClock(to: dayAfter)
+        check("不会又出现在今天", !finished.todayTodos.contains { $0.id == finishedID })
+        check("但它留在那天被记住", (finished.log[tomorrowKey] ?? []).contains(finishedID))
+        try? FileManager.default.removeItem(at: carryURL)
+        try? FileManager.default.removeItem(at: doneURL)
+
         try? FileManager.default.removeItem(at: url)
         print(failures == 0 ? "\nall checks passed" : "\n\(failures) check(s) failed")
         exit(failures == 0 ? 0 : 1)
