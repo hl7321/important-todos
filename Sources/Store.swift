@@ -5,9 +5,10 @@ import SwiftUI
 struct Todo: Codable, Identifiable, Hashable {
     var id: String
     var title: String
-    /// nil means "every day" (the original behaviour). A day key means this one is only
-    /// needed on that date — that is how 明日待办 items are stored, and how they turn
-    /// into today's items without any other moving part.
+    /// The day this item belongs to. Every item belongs to exactly one day: the card is a
+    /// per-day list, so tomorrow starts empty and yesterday lives on in the history.
+    /// nil only ever appears in data written by an older build — the store re-dates those
+    /// to the previous day on launch (see migrateLegacyItems).
     var day: String? = nil
 }
 
@@ -127,7 +128,13 @@ final class Store: ObservableObject {
                 frameOrigin = CGPoint(x: x, y: y)
             }
         } else {
-            todos = Store.starterTodos
+            // The examples belong to today, like everything else on the card.
+            let today = Store.key(for: Date())
+            todos = Store.starterTodos.map { todo in
+                var copy = todo
+                copy.day = today
+                return copy
+            }
             log = [:]
             needed = [:]
             floating = true
@@ -139,8 +146,8 @@ final class Store: ObservableObject {
         clock = Timer.publish(every: 30, on: .main, in: .common)
             .autoconnect()
             .sink { [weak self] date in self?.advanceClock(to: date) }
-        // If the card was closed across midnight, finish the rollover now.
-        carryForwardOverdue()
+        // Data from an older build has undated items; give them a day so today is clean.
+        migrateLegacyItems()
     }
 
     // MARK: - Days
@@ -162,10 +169,11 @@ final class Store: ObservableObject {
     var tomorrow: Date { Store.date(daysAgo: -1, from: now) }
     var tomorrowKey: String { Store.key(for: tomorrow) }
 
-    /// Every day's list: recurring tasks, plus anything scheduled for that one date.
+    /// The list for one particular day, and nothing else: yesterday's items do not come
+    /// along, and tomorrow's wait in their own drawer.
     func todos(on date: Date) -> [Todo] {
         let key = Store.key(for: date)
-        return todos.filter { $0.day == nil || $0.day == key }
+        return todos.filter { $0.day == key }
     }
 
     var todayTodos: [Todo] { todos(on: now) }
@@ -249,16 +257,17 @@ final class Store: ObservableObject {
         return stride(from: 0, to: days, by: 1).map { offset in
             let day = Store.date(daysAgo: offset, from: now)
             let key = Store.key(for: day)
-            let required = needed[key] ?? log[key] ?? []
+            // What that day asked for: its recorded requirement, what it actually
+            // punched, or — for a day nobody finished — the list it was given.
+            let required = needed[key] ?? log[key] ?? todos(on: day).map(\.id)
             let done = Set(log[key] ?? [])
             let entries = required.compactMap { id -> HistoryDay.Entry? in
                 guard let title = titles[id] else { return nil }
                 return HistoryDay.Entry(id: id, title: title, done: done.contains(id))
             }
-            let hasRecord = needed[key] != nil || log[key] != nil
             return HistoryDay(date: day,
                               complete: isComplete(day),
-                              hasRecord: hasRecord && !required.isEmpty,
+                              hasRecord: !entries.isEmpty,
                               entries: entries)
         }
     }
@@ -336,7 +345,9 @@ final class Store: ObservableObject {
     func add(title: String) {
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        todos.append(Todo(id: UUID().uuidString, title: trimmed))
+        // Belongs to today only. Tomorrow's card starts with tomorrow's list, and this
+        // one moves into the history with the rest of the day.
+        todos.append(Todo(id: UUID().uuidString, title: trimmed, day: todayKey))
         refreshTodayRequirement()
         save()
     }
@@ -350,27 +361,36 @@ final class Store: ObservableObject {
         save()
     }
 
-    /// Moves an unfinished item that was planned for an earlier day onto today. A missed
-    /// day should not silently swallow something the user marked as important.
-    func carryForwardOverdue() {
-        let key = todayKey
-        var moved = false
-        for index in todos.indices {
-            guard let day = todos[index].day, day < key else { continue }
-            if (log[day] ?? []).contains(todos[index].id) { continue }
-            todos[index].day = key
-            moved = true
+    /// Items written before the card became a per-day list carry no date. They are
+    /// stamped with the previous day, which is what makes today start clean — and they
+    /// stay visible in the history for that day, with the punches they earned.
+    func migrateLegacyItems() {
+        let fallbackDay = Store.key(for: Store.date(daysAgo: 1, from: now))
+        var migrated: [String] = []
+        for index in todos.indices where todos[index].day == nil {
+            todos[index].day = fallbackDay
+            migrated.append(todos[index].id)
         }
-        guard moved else { return }
-        if needed[key] != nil { refreshTodayRequirement() }
+        guard !migrated.isEmpty else { return }
+        // Yesterday's card asked for those items, so add them to whatever yesterday was
+        // already recorded as requiring — nothing the user wrote becomes invisible.
+        var yesterday = needed[fallbackDay] ?? []
+        for id in migrated where !yesterday.contains(id) {
+            yesterday.append(id)
+        }
+        needed[fallbackDay] = yesterday
+        // Today's list is now just today's items, so today's requirement has to be
+        // rewritten too; otherwise the day could never be completed (it would still be
+        // waiting for items that belong to yesterday).
+        refreshTodayRequirement()
         save()
     }
 
     /// The card's clock. The timer calls it, and the checks call it to travel a day.
+    /// Rolling over needs no other work: the new day simply has its own — usually empty —
+    /// list, and yesterday's stays visible in the history only.
     func advanceClock(to date: Date) {
-        let previous = todayKey
         now = date
-        if todayKey != previous { carryForwardOverdue() }
     }
 
     func rename(_ todo: Todo, to title: String) {

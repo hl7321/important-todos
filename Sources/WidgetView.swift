@@ -180,7 +180,7 @@ struct WidgetView: View {
                     .font(.system(size: 9, weight: .bold))
                     .foregroundStyle(theme.stamp)
                     .frame(width: 15)
-                TextField("每天都要做的一件事…", text: $draft)
+                TextField("今天要做的事…", text: $draft)
                     .textFieldStyle(.plain)
                     .font(Face.task)
                     .foregroundStyle(theme.ink)
@@ -218,7 +218,7 @@ struct WidgetView: View {
             }
             .buttonStyle(.plain)
             .onHover { hoverAdd = $0 }
-            .help("添加一个每天都做的事")
+            .help("写一件今天要做的事（明天它跟着这一天的记录进历史）")
         }
     }
 
@@ -360,7 +360,7 @@ struct WidgetView: View {
             Text("这张卡还没有印上内容")
                 .font(Face.task)
                 .foregroundStyle(theme.ink)
-            Text("写下每天都要做的事，明天它会自己清空。")
+            Text("写下今天要做的事；明天这张卡会清空，只留在历史里。")
                 .font(.system(size: 11))
                 .foregroundStyle(theme.inkSoft)
         }

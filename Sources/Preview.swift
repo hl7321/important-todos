@@ -40,12 +40,15 @@ func sampleStore(allDone: Bool,
                  width: Double = 292) -> Store {
     let url = URL(fileURLWithPath: NSTemporaryDirectory())
         .appendingPathComponent("dailycheck-preview-\(UUID().uuidString).json")
+    // Every item belongs to a day, so the sample has to say which one — otherwise the
+    // store would treat it as legacy data and file it under yesterday.
+    let todayKey = Store.key(for: Date())
     var todos: [[String: String]] = empty ? [] : [
-        ["id": "t1", "title": "喝水 8 杯"],
-        ["id": "t2", "title": "读书 30 分钟"],
-        ["id": "t3", "title": "运动 20 分钟"],
-        ["id": "t4", "title": "写今天的日志"],
-        ["id": "t5", "title": "23:30 前关灯"],
+        ["id": "t1", "title": "喝水 8 杯", "day": todayKey],
+        ["id": "t2", "title": "读书 30 分钟", "day": todayKey],
+        ["id": "t3", "title": "运动 20 分钟", "day": todayKey],
+        ["id": "t4", "title": "写今天的日志", "day": todayKey],
+        ["id": "t5", "title": "23:30 前关灯", "day": todayKey],
     ]
     let ids = todos.compactMap { $0["id"] }
     if tomorrowOpen {
